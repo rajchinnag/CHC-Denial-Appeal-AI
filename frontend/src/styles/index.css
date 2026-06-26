@@ -1,0 +1,52 @@
+:root {
+  /* --- Color tokens --- */
+  --bg: #EAEEF1;
+  --paper: #FFFFFF;
+  --ink: #16212E;
+  --ink-soft: #4B5A68;
+  --line: #CBD5DB;
+  --line-soft: #E3E8EB;
+  --teal: #0E7C7A;
+  --teal-deep: #0A5E5D;
+  --amber: #B8893B;
+  --rust: #A33D34;
+  --rust-bg: #FBEAE8;
+  --teal-bg: #E6F3F2;
+
+  /* --- Type tokens --- */
+  --font-display: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-body: 'Inter', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
+code, .code-field input, .code-field textarea, .mono {
+  font-family: var(--font-mono);
+}
+
+a { color: var(--teal-deep); }
