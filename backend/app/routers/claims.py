@@ -1,23 +1,25 @@
-"""
+﻿"""
 The single orchestration endpoint for the denial appeal pipeline.
 
 Flow:
   1. Parse + validate the structured intake form.
-  2. Classify the denial via CARC lookup (fallback: treat as unclassified,
-     let Gemini's policy research step reason about category from context).
+  2. Classify the denial via CARC lookup.
   3. Extract text from the uploaded medical record.
   4. De-identify PHI -> de-identified text + in-memory token map.
-  5. Gemini, with Search grounding: find the payor's actual policy and
-     determine validity of the denial.
-  6. Gemini: generate the appeal or reconsideration letter (still token'd).
-  7. Re-identify -> swap tokens back to real PHI in the final letter only.
-  8. Return result. The token map is discarded when this function returns —
-     never persisted, never logged.
+  5. Gemini: find the payor's actual policy and determine validity.
+  6. Gemini: analyze coding gaps and suggest corrections.
+  7. Gemini: generate the appeal or reconsideration letter (still tokenized).
+  8. Re-identify -> swap tokens back to real PHI in the final letter only.
+  9. Return result. Token map discarded when function returns.
 """
 import json
 from fastapi import APIRouter, UploadFile, Form, HTTPException
 
-from app.models.schemas import ClaimIntake, AppealResult, DenialClassification, PolicyFinding
+from app.models.schemas import (
+    ClaimIntake, AppealResult, DenialClassification, PolicyFinding,
+    CodingRecommendations, CptChange, DxChange, ModifierChange,
+    RevenueCodeChange, OtherRecommendation
+)
 from app.services.carc_classifier import classify_denial
 from app.services.record_extractor import extract_text
 from app.services.phi_deidentifier import detect_phi_entities, tokenize, reidentify
@@ -29,7 +31,7 @@ router = APIRouter()
 def _build_intake_summary(intake: ClaimIntake, classification: DenialClassification) -> str:
     lines = [
         f"Payor: {intake.claim_payor}",
-        f"Denial Code (CARC): {intake.denial_code}" + (f" — {classification.carc_description}" if classification.carc_description else ""),
+        f"Denial Code (CARC): {intake.denial_code}" + (f" - {classification.carc_description}" if classification.carc_description else ""),
         f"Denial Reason Code (RARC): {intake.denial_reason_code or 'N/A'}",
         f"Denial Category: {classification.category}",
         f"Billed CPT/HCPCS: {', '.join(intake.billed_codes) or 'N/A'}",
@@ -51,6 +53,18 @@ def _codes_summary(intake: ClaimIntake) -> str:
     return f"CPT/HCPCS: {', '.join(intake.billed_codes)} | Dx: {', '.join(intake.dx_codes)} | DRG: {intake.drg_code or 'N/A'}"
 
 
+def _build_coding_recommendations(raw: dict) -> CodingRecommendations:
+    return CodingRecommendations(
+        has_recommendations=raw.get("has_recommendations", False),
+        cpt_changes=[CptChange(**x) for x in raw.get("cpt_changes", [])],
+        dx_changes=[DxChange(**x) for x in raw.get("dx_changes", [])],
+        modifier_changes=[ModifierChange(**x) for x in raw.get("modifier_changes", [])],
+        revenue_code_changes=[RevenueCodeChange(**x) for x in raw.get("revenue_code_changes", [])],
+        other_recommendations=[OtherRecommendation(**x) for x in raw.get("other_recommendations", [])],
+        summary=raw.get("summary", ""),
+    )
+
+
 @router.post("/claims/submit", response_model=AppealResult)
 async def submit_claim(
     intake_json: str = Form(..., description="JSON-encoded ClaimIntake"),
@@ -61,10 +75,7 @@ async def submit_claim(
     except (json.JSONDecodeError, ValueError) as e:
         raise HTTPException(status_code=422, detail=f"Invalid intake data: {e}")
 
-    # Conditional validation: specialty/NPI denials require taxonomy
     if intake.specialty_type and not intake.taxonomy_code:
-        # Soft check — only enforce if this clearly looks like a specialty/NPI denial.
-        # CARC B7 and similar codes relate to provider eligibility/specialty.
         if intake.denial_code.strip().upper().lstrip("CO-") == "B7":
             raise HTTPException(
                 status_code=422,
@@ -80,10 +91,9 @@ async def submit_claim(
     if medical_record is not None:
         file_bytes = await medical_record.read()
         raw_text = extract_text(file_bytes, medical_record.filename)
-
         entities = detect_phi_entities(raw_text, gemini_detect_fn=gemini_service.simple_generate)
         deidentified_text, token_map = tokenize(raw_text, entities)
-        deidentified_record_excerpt = deidentified_text[:6000]  # keep prompt size sane
+        deidentified_record_excerpt = deidentified_text[:6000]
 
     intake_summary = _build_intake_summary(intake, classification)
     full_context = f"{intake_summary}\n\nMedical Record Excerpt (de-identified):\n{deidentified_record_excerpt}"
@@ -96,15 +106,21 @@ async def submit_claim(
         denial_code=intake.denial_code,
     )
 
-    # Step 4: generate the letter (still contains PHI tokens)
+    # Step 4: analyze coding gaps and suggest corrections
+    coding_raw = gemini_service.analyze_coding_gaps(
+        intake_summary=intake_summary,
+        record_text=deidentified_record_excerpt,
+    )
+    coding_recommendations = _build_coding_recommendations(coding_raw)
+
+    # Step 5: generate the letter (still contains PHI tokens)
     letter_tokenized = gemini_service.generate_letter(
         intake_summary=full_context,
         classification=classification.model_dump(),
         policy_result=policy_result,
     )
 
-    # Step 5: re-identify — restore real PHI into the final letter only.
-    # token_map goes out of scope and is garbage-collected once this returns.
+    # Step 6: re-identify - restore real PHI into the final letter only.
     final_letter = reidentify(letter_tokenized, token_map)
 
     return AppealResult(
@@ -113,4 +129,5 @@ async def submit_claim(
         policy_findings=[PolicyFinding(**f) for f in policy_result.get("policy_findings", [])],
         letter=final_letter,
         reasoning_summary=policy_result.get("reasoning_summary", ""),
+        coding_recommendations=coding_recommendations,
     )
