@@ -11,11 +11,9 @@ class ValueCodeAmount(BaseModel):
 
 
 class ClaimIntake(BaseModel):
-    # --- Claim / payor context ---
     claim_payor: str = Field(..., description="Name of the insurance payor")
     denial_code: str = Field(..., description="CARC - Claim Adjustment Reason Code")
     denial_reason_code: Optional[str] = Field(None, description="RARC - Remittance Advice Remark Code")
-    # --- Billed codes ---
     billed_codes: List[str] = Field(default_factory=list, description="CPT / HCPCS codes billed")
     dx_codes: List[str] = Field(default_factory=list, description="ICD-10 Dx codes billed")
     revenue_codes: Optional[List[str]] = Field(default_factory=list)
@@ -23,14 +21,10 @@ class ClaimIntake(BaseModel):
     occurrence_codes: Optional[List[str]] = Field(default_factory=list)
     value_codes: Optional[List[ValueCodeAmount]] = Field(default_factory=list)
     drg_code: Optional[str] = None
-    # --- Claim form / visit context ---
     type_of_bill: Optional[str] = Field(None, description="UB-04 Type of Bill, e.g. 131")
     visit_type: Optional[str] = Field(None, description="e.g. Inpatient, Outpatient, ED, Office visit")
     specialty_type: Optional[str] = Field(None, description="Rendering provider specialty")
-    # --- Conditional: only required if the denial is specialty/NPI related ---
-    taxonomy_code: Optional[str] = Field(
-        None, description="NPI taxonomy code - required when denial relates to provider specialty/NPI mismatch"
-    )
+    taxonomy_code: Optional[str] = Field(None, description="NPI taxonomy code")
 
     @field_validator("billed_codes", "dx_codes")
     @classmethod
@@ -51,33 +45,33 @@ class PolicyFinding(BaseModel):
 
 
 class CptChange(BaseModel):
-    current: str
-    suggested: str
-    reason: str
+    current: Optional[str] = None
+    suggested: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class DxChange(BaseModel):
-    action: str
-    code: str
-    description: str
-    reason: str
+    action: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class ModifierChange(BaseModel):
-    action: str
-    modifier: str
-    reason: str
+    action: Optional[str] = None
+    modifier: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class RevenueCodeChange(BaseModel):
-    current: str
-    suggested: str
-    reason: str
+    current: Optional[str] = None
+    suggested: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class OtherRecommendation(BaseModel):
-    recommendation: str
-    reason: str
+    recommendation: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class CodingRecommendations(BaseModel):
