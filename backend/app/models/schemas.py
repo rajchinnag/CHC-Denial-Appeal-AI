@@ -84,6 +84,51 @@ class CodingRecommendations(BaseModel):
     summary: str = ""
 
 
+# ── Medical Necessity Models ──────────────────────────────────────────────────
+
+class MNPolicy(BaseModel):
+    cms_supports: Optional[bool] = None
+    cms_policy_name: Optional[str] = None
+    cms_policy_number: Optional[str] = None
+    cms_policy_summary: Optional[str] = None
+    payer_supports: Optional[bool] = None
+    payer_policy_name: Optional[str] = None
+    payer_policy_number: Optional[str] = None
+    payer_policy_summary: Optional[str] = None
+    required_conditions: List[str] = []
+    missing_conditions: List[str] = []
+    overall_policy_supports: Optional[bool] = None
+    policy_reasoning: Optional[str] = None
+
+
+class MNRecord(BaseModel):
+    record_supports_mn: bool = False
+    documented_conditions: List[str] = []
+    missing_documentation: List[str] = []
+    can_correct_codes: bool = False
+    record_summary: Optional[str] = None
+
+
+class MNCorrectedClaim(BaseModel):
+    has_corrections: bool = False
+    cpt_changes: List[CptChange] = []
+    dx_changes: List[DxChange] = []
+    modifier_changes: List[ModifierChange] = []
+    revenue_code_changes: List[RevenueCodeChange] = []
+
+
+class MedicalNecessityResult(BaseModel):
+    training_status: str = "general_mn_logic"
+    logic_path: str = ""
+    policy: MNPolicy = MNPolicy()
+    record: MNRecord = MNRecord()
+    corrected_claim: MNCorrectedClaim = MNCorrectedClaim()
+    reprocess_letter: str = ""
+    appeal_letter: str = ""
+
+
+# ── Main Result ───────────────────────────────────────────────────────────────
+
 class AppealResult(BaseModel):
     classification: DenialClassification
     denial_valid: bool
@@ -91,3 +136,4 @@ class AppealResult(BaseModel):
     letter: str
     reasoning_summary: str
     coding_recommendations: Optional[CodingRecommendations] = None
+    medical_necessity: Optional[MedicalNecessityResult] = None
