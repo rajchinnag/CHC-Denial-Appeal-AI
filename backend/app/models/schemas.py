@@ -84,6 +84,15 @@ class CodingRecommendations(BaseModel):
     summary: str = ""
 
 
+# ── PHI Report ────────────────────────────────────────────────────────────────
+
+class PhiReport(BaseModel):
+    total_entities: int = 0
+    by_type: Dict[str, List[str]] = {}
+    types_found: List[str] = []
+    summary: str = ""
+
+
 # ── Medical Necessity Models ──────────────────────────────────────────────────
 
 class MNPolicy(BaseModel):
@@ -137,3 +146,4 @@ class AppealResult(BaseModel):
     reasoning_summary: str
     coding_recommendations: Optional[CodingRecommendations] = None
     medical_necessity: Optional[MedicalNecessityResult] = None
+    phi_report: Optional[PhiReport] = None

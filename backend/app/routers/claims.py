@@ -1,15 +1,17 @@
 ﻿"""
-The single orchestration endpoint for the denial appeal pipeline.
+Denial appeal pipeline endpoints.
 
-Flow:
-  1. Parse + validate the structured intake form.
-  2. Classify the denial via CARC lookup.
-  3. Extract text from the uploaded medical record.
-  4. De-identify PHI -> de-identified text + in-memory token map.
-  5. Route: Medical Necessity (CO-50 or untrained) -> MN pipeline
-             All others -> standard policy research + letter pipeline
-  6. Re-identify -> swap tokens back to real PHI in letters only.
-  7. Return result. Token map discarded when function returns.
+Two-step HIPAA-safe flow:
+  STEP 1 — POST /api/claims/scan
+    Takes only the medical record file.
+    Runs PHI detection LOCALLY (zero AI, zero network).
+    Returns PHI report + tokenized text to frontend.
+    User reviews what was redacted BEFORE anything goes to AI.
+
+  STEP 2 — POST /api/claims/submit
+    Takes form data + pre-tokenized text (sent back from frontend).
+    Gemini only ever sees the tokenized text — never raw PHI.
+    Returns full appeal result including letters.
 """
 import json
 from fastapi import APIRouter, UploadFile, Form, HTTPException
@@ -18,20 +20,17 @@ from app.models.schemas import (
     ClaimIntake, AppealResult, DenialClassification, PolicyFinding,
     CodingRecommendations, CptChange, DxChange, ModifierChange,
     RevenueCodeChange, OtherRecommendation,
-    MedicalNecessityResult, MNPolicy, MNRecord, MNCorrectedClaim
+    MedicalNecessityResult, MNPolicy, MNRecord, MNCorrectedClaim,
+    PhiReport
 )
 from app.services.carc_classifier import classify_denial
 from app.services.record_extractor import extract_text
-from app.services.phi_deidentifier import detect_phi_entities, tokenize, reidentify
+from app.services.phi_deidentifier import detect_phi_entities, tokenize, reidentify, phi_report
 from app.services import gemini_service
 
 router = APIRouter()
 
-# CARC codes that trigger the MN pipeline
 MN_CARC_CODES = {"50", "CO50", "CO-50", "OA50", "OA-50"}
-
-# CARC codes with trained scenario logic
-TRAINED_MN_CODES = {"50", "CO50", "CO-50", "OA50", "OA-50"}
 
 
 def _is_mn_denial(denial_code: str) -> bool:
@@ -116,11 +115,50 @@ def _build_mn_result(raw: dict, token_map: dict) -> MedicalNecessityResult:
     )
 
 
+# ── STEP 1: PHI Scan endpoint ─────────────────────────────────────────────────
+
+@router.post("/claims/scan")
+async def scan_record(medical_record: UploadFile):
+    """
+    Scan uploaded medical record for PHI locally.
+    Zero AI calls. Zero network. Returns PHI report + tokenized text.
+    Frontend shows report to user before anything goes to Gemini.
+    """
+    file_bytes = await medical_record.read()
+    raw_text = extract_text(file_bytes, medical_record.filename)
+
+    # Local PHI detection — no AI, no network
+    entities = detect_phi_entities(raw_text)
+
+    # Build token map and tokenized text
+    deidentified_text, token_map = tokenize(raw_text, entities)
+
+    # Build report for UI
+    report = phi_report(entities)
+
+    return {
+        "phi_report": report,
+        "deidentified_text": deidentified_text,
+        "token_map": token_map,
+        "entity_count": len(entities),
+    }
+
+
+# ── STEP 2: Submit endpoint ───────────────────────────────────────────────────
+
 @router.post("/claims/submit", response_model=AppealResult)
 async def submit_claim(
     intake_json: str = Form(..., description="JSON-encoded ClaimIntake"),
+    deidentified_text: str = Form(default="", description="Pre-tokenized record text from scan step"),
+    token_map_json: str = Form(default="{}", description="JSON token map from scan step"),
     medical_record: UploadFile = None,
 ):
+    """
+    Run full denial appeal pipeline.
+    Gemini only ever sees deidentified_text — never raw PHI.
+    If deidentified_text is provided (from scan step), use it directly.
+    If not, run scan inline (fallback for no-record submissions).
+    """
     try:
         intake = ClaimIntake(**json.loads(intake_json))
     except (json.JSONDecodeError, ValueError) as e:
@@ -136,23 +174,40 @@ async def submit_claim(
     # Step 1: classify
     classification = classify_denial(intake.denial_code)
 
-    # Step 2: extract + de-identify the medical record (if provided)
+    # Step 2: use pre-tokenized text from scan step if available
     token_map = {}
     deidentified_record_excerpt = "No medical record provided."
-    if medical_record is not None:
+    phi_report_data = PhiReport()
+
+    if deidentified_text and deidentified_text.strip():
+        # Frontend already scanned and user confirmed — use tokenized text directly
+        try:
+            token_map = json.loads(token_map_json)
+        except json.JSONDecodeError:
+            token_map = {}
+        deidentified_record_excerpt = deidentified_text[:6000]
+        phi_report_data = PhiReport(
+            total_entities=len(token_map),
+            by_type={},
+            types_found=[],
+            summary=f"{len(token_map)} PHI tokens replaced before AI processing."
+        )
+
+    elif medical_record is not None:
+        # Fallback: no pre-scan, run inline (no record case)
         file_bytes = await medical_record.read()
         raw_text = extract_text(file_bytes, medical_record.filename)
-        entities = detect_phi_entities(raw_text, gemini_detect_fn=gemini_service.simple_generate)
-        deidentified_text, token_map = tokenize(raw_text, entities)
-        deidentified_record_excerpt = deidentified_text[:6000]
+        entities = detect_phi_entities(raw_text)
+        phi_report_data = PhiReport(**phi_report(entities))
+        deidentified_text_inline, token_map = tokenize(raw_text, entities)
+        deidentified_record_excerpt = deidentified_text_inline[:6000]
 
     intake_summary = _build_intake_summary(intake, classification)
     full_context = f"{intake_summary}\n\nMedical Record Excerpt (de-identified):\n{deidentified_record_excerpt}"
 
-    # ── Route: MN denial vs standard denial ──────────────────────────────────
+    # ── Route: MN vs standard ─────────────────────────────────────────────────
     if _is_mn_denial(intake.denial_code) or classification.category == "medical_necessity":
 
-        # MN Pipeline
         mn_raw = gemini_service.medical_necessity_analysis(
             payor=intake.claim_payor,
             intake_summary=intake_summary,
@@ -162,7 +217,6 @@ async def submit_claim(
         )
         mn_result = _build_mn_result(mn_raw, token_map)
 
-        # Still run standard policy research for the top-level result fields
         policy_result = gemini_service.grounded_policy_research(
             payor=intake.claim_payor,
             category=classification.category,
@@ -178,10 +232,10 @@ async def submit_claim(
             reasoning_summary=policy_result.get("reasoning_summary", ""),
             coding_recommendations=None,
             medical_necessity=mn_result,
+            phi_report=phi_report_data,
         )
 
     else:
-        # Standard Pipeline
         policy_result = gemini_service.grounded_policy_research(
             payor=intake.claim_payor,
             category=classification.category,
@@ -210,4 +264,5 @@ async def submit_claim(
             reasoning_summary=policy_result.get("reasoning_summary", ""),
             coding_recommendations=coding_recommendations,
             medical_necessity=None,
+            phi_report=phi_report_data,
         )

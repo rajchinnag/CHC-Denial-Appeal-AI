@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+﻿import React, { useState } from 'react'
 import IntakeForm from './components/IntakeForm.jsx'
 import ResultView from './components/ResultView.jsx'
 import './styles/app.css'
@@ -10,13 +10,22 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  async function handleSubmit(intake, recordFile) {
+  async function handleSubmit(intake, recordFile, deidentifiedText, tokenMap) {
     setLoading(true)
     setError(null)
     try {
       const formData = new FormData()
       formData.append('intake_json', JSON.stringify(intake))
-      if (recordFile) formData.append('medical_record', recordFile)
+
+      if (deidentifiedText && deidentifiedText.trim()) {
+        // Two-step flow: PHI already scanned and confirmed by user
+        // Send tokenized text + token map — no raw file needed
+        formData.append('deidentified_text', deidentifiedText)
+        formData.append('token_map_json', JSON.stringify(tokenMap || {}))
+      } else if (recordFile) {
+        // Fallback: no record uploaded, or no scan done
+        formData.append('medical_record', recordFile)
+      }
 
       const res = await fetch(`${API_BASE}/api/claims/submit`, {
         method: 'POST',
@@ -46,7 +55,6 @@ export default function App() {
           <p>Coding &middot; Medical necessity &middot; Authorization &middot; Bill type</p>
         </div>
       </header>
-
       <main className="shell-main">
         {!result && (
           <IntakeForm onSubmit={handleSubmit} loading={loading} error={error} />

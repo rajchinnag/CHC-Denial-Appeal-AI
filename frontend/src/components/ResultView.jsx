@@ -46,6 +46,85 @@ function LetterBlock({ title, letter, printId }) {
   )
 }
 
+function PhiReportSection({ report }) {
+  const [expanded, setExpanded] = useState(false)
+
+  if (!report || report.total_entities === 0) {
+    return (
+      <section className="ledger-section">
+        <h2>PHI Detection Report</h2>
+        <div className="phi-safe-banner">
+          ✓ No PHI identifiers detected in uploaded record. Text sent to AI as-is.
+        </div>
+      </section>
+    )
+  }
+
+  const typeLabels = {
+    PATIENT_NAME: 'Patient Names',
+    PROVIDER_NAME: 'Provider Names',
+    FACILITY_NAME: 'Facility Names',
+    DOB: 'Dates of Birth',
+    DATE: 'Dates',
+    SSN: 'Social Security Numbers',
+    MRN: 'Medical Record Numbers',
+    PHONE: 'Phone Numbers',
+    FAX: 'Fax Numbers',
+    EMAIL: 'Email Addresses',
+    ADDRESS: 'Addresses',
+    ZIP: 'ZIP Codes',
+    AGE: 'Ages (90+)',
+    PROVIDER_NPI: 'NPI Numbers',
+    ACCOUNT_NUMBER: 'Account Numbers',
+    INSURANCE_ID: 'Insurance IDs',
+    URL: 'URLs / IP Addresses',
+    DEVICE_ID: 'Device Identifiers',
+    CERT_NUMBER: 'Certificate Numbers',
+  }
+
+  return (
+    <section className="ledger-section">
+      <h2>PHI Detection Report</h2>
+      <div className="phi-report-banner">
+        <span className="phi-shield">🔒</span>
+        <div>
+          <div className="phi-report-title">
+            {report.total_entities} PHI identifier{report.total_entities !== 1 ? 's' : ''} detected and removed
+          </div>
+          <div className="phi-report-sub">{report.summary}</div>
+        </div>
+        <button
+          type="button"
+          className="btn-ghost-sm"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? 'Hide details' : 'View details'}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="phi-details">
+          {Object.entries(report.by_type).map(([type, values]) => (
+            <div key={type} className="phi-type-block">
+              <div className="phi-type-label">
+                {typeLabels[type] || type} ({values.length})
+              </div>
+              <div className="phi-values">
+                {values.map((v, i) => (
+                  <span key={i} className="phi-value-tag">
+                    {v} <span className="phi-arrow">→</span>
+                    <span className="phi-token">[{type}_{i + 1}]</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function MNSection({ mn }) {
   const { training_status, logic_path, policy, record, corrected_claim } = mn
 
@@ -59,21 +138,18 @@ function MNSection({ mn }) {
 
   return (
     <>
-      {/* Training status banner */}
       {training_status === 'general_mn_logic' && (
         <div className="training-banner">
           ⚠ Running general medical necessity logic — scenario-specific training pending for this denial code.
         </div>
       )}
 
-      {/* Logic path */}
       <section className="ledger-section">
         <h2>Medical Necessity Analysis</h2>
         <div className={`logic-path-badge logic-path-${pathInfo.color}`}>
           {pathInfo.label}
         </div>
 
-        {/* Policy findings */}
         <div className="mn-grid">
           <div className="mn-card">
             <div className="mn-card-title">CMS Policy (LCD/NCD)</div>
@@ -84,7 +160,9 @@ function MNSection({ mn }) {
                     {policy.cms_supports ? 'SUPPORTS' : 'CONTRADICTS'}
                   </span>
                 </div>
-                <div className="mn-policy-name">{policy.cms_policy_name} {policy.cms_policy_number && `(${policy.cms_policy_number})`}</div>
+                <div className="mn-policy-name">
+                  {policy.cms_policy_name} {policy.cms_policy_number && `(${policy.cms_policy_number})`}
+                </div>
                 <p className="mn-policy-summary">{policy.cms_policy_summary}</p>
               </>
             ) : (
@@ -101,7 +179,9 @@ function MNSection({ mn }) {
                     {policy.payer_supports ? 'SUPPORTS' : 'CONTRADICTS'}
                   </span>
                 </div>
-                <div className="mn-policy-name">{policy.payer_policy_name} {policy.payer_policy_number && `(${policy.payer_policy_number})`}</div>
+                <div className="mn-policy-name">
+                  {policy.payer_policy_name} {policy.payer_policy_number && `(${policy.payer_policy_number})`}
+                </div>
                 <p className="mn-policy-summary">{policy.payer_policy_summary}</p>
               </>
             ) : (
@@ -129,7 +209,6 @@ function MNSection({ mn }) {
         )}
       </section>
 
-      {/* Record analysis */}
       <section className="ledger-section">
         <h2>Medical Record Analysis</h2>
         <div className="mn-record-status">
@@ -154,7 +233,6 @@ function MNSection({ mn }) {
         )}
       </section>
 
-      {/* Corrected claim */}
       {corrected_claim && corrected_claim.has_corrections && (
         <section className="ledger-section">
           <h2>Corrected Claim Suggestions</h2>
@@ -235,10 +313,13 @@ function MNSection({ mn }) {
 
 export default function ResultView({ result, onReset }) {
   const [copied, setCopied] = useState(false)
-  const { classification, denial_valid, policy_findings, letter,
-          reasoning_summary, coding_recommendations, medical_necessity } = result
+  const {
+    classification, denial_valid, policy_findings, letter,
+    reasoning_summary, coding_recommendations, medical_necessity, phi_report
+  } = result
 
   const isMN = !!medical_necessity
+  const hasCoding = coding_recommendations && coding_recommendations.has_recommendations
 
   function copyLetter() {
     navigator.clipboard.writeText(letter)
@@ -249,24 +330,26 @@ export default function ResultView({ result, onReset }) {
   function printLetter() {
     const win = window.open('', '_blank')
     win.document.write(`
-      <html><head><title>Appeal Letter</title>
+      <html><head><title>${denial_valid ? 'Reconsideration Letter' : 'Appeal Letter'}</title>
       <style>
         body { font-family: Arial, sans-serif; font-size: 13px; line-height: 1.6; padding: 40px; }
         pre { white-space: pre-wrap; font-family: Arial, sans-serif; font-size: 13px; }
         h1 { font-size: 16px; border-bottom: 1px solid #ccc; padding-bottom: 8px; }
       </style></head>
-      <body><h1>${denial_valid ? 'Reconsideration Letter' : 'Appeal Letter'}</h1>
-      <pre>${letter}</pre></body></html>
+      <body>
+        <h1>${denial_valid ? 'Reconsideration Letter' : 'Appeal Letter'}</h1>
+        <pre>${letter.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+      </body></html>
     `)
     win.document.close()
     win.focus()
     setTimeout(() => { win.print(); win.close(); }, 500)
   }
 
-  const hasCoding = coding_recommendations && coding_recommendations.has_recommendations
-
   return (
     <div className="result">
+
+      {/* Stamp + meta */}
       <div className="result-top">
         <div className={`stamp ${denial_valid ? 'stamp-valid' : 'stamp-invalid'}`}>
           {denial_valid ? 'DENIAL UPHELD' : 'DENIAL OVERTURNABLE'}
@@ -282,11 +365,16 @@ export default function ResultView({ result, onReset }) {
         </div>
       </div>
 
+      {/* PHI Report — always first after stamp */}
+      <PhiReportSection report={phi_report} />
+
+      {/* Reasoning */}
       <section className="ledger-section">
         <h2>Reasoning</h2>
         <p>{reasoning_summary}</p>
       </section>
 
+      {/* Policy findings */}
       {policy_findings && policy_findings.length > 0 && (
         <section className="ledger-section">
           <h2>Policy Findings</h2>
@@ -302,10 +390,10 @@ export default function ResultView({ result, onReset }) {
         </section>
       )}
 
-      {/* MN-specific section */}
+      {/* MN section */}
       {isMN && <MNSection mn={medical_necessity} />}
 
-      {/* Standard coding recommendations (non-MN path) */}
+      {/* Standard coding recommendations */}
       {hasCoding && !isMN && (
         <section className="ledger-section">
           <h2>Corrected Claim Recommendations</h2>
@@ -397,7 +485,7 @@ export default function ResultView({ result, onReset }) {
         </section>
       )}
 
-      {/* MN: Two separate letters */}
+      {/* Letters */}
       {isMN ? (
         <>
           <section className="ledger-section">

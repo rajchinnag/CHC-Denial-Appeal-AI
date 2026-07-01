@@ -1,7 +1,7 @@
-import React, { useState } from 'react'
+﻿import React, { useState } from 'react'
 
 const VISIT_TYPES = ['Inpatient', 'Outpatient', 'Emergency Department', 'Office Visit', 'Ambulatory Surgery', 'Telehealth']
-const SPECIALTY_DENIAL_CODES = ['B7'] // CARC codes that typically require taxonomy
+const SPECIALTY_DENIAL_CODES = ['B7']
 
 function splitCodes(str) {
   return str.split(',').map(s => s.trim()).filter(Boolean)
@@ -14,13 +14,84 @@ const SECTIONS = [
   { key: 'record', label: 'Medical Record' },
 ]
 
+function PhiScanReport({ report, onConfirm, onRescan, scanning }) {
+  const [expanded, setExpanded] = useState(false)
+
+  const typeLabels = {
+    PATIENT_NAME: 'Patient Names', PROVIDER_NAME: 'Provider Names',
+    FACILITY_NAME: 'Facility Names', DOB: 'Dates of Birth', DATE: 'Dates',
+    SSN: 'Social Security Numbers', MRN: 'Medical Record Numbers',
+    PHONE: 'Phone Numbers', FAX: 'Fax Numbers', EMAIL: 'Email Addresses',
+    ADDRESS: 'Addresses', ZIP: 'ZIP Codes', AGE: 'Ages (90+)',
+    PROVIDER_NPI: 'NPI Numbers', ACCOUNT_NUMBER: 'Account Numbers',
+    INSURANCE_ID: 'Insurance IDs', URL: 'URLs / IP Addresses',
+    DEVICE_ID: 'Device Identifiers', CERT_NUMBER: 'Certificate Numbers',
+  }
+
+  return (
+    <div className="phi-scan-result">
+      <div className="phi-scan-header">
+        <span className="phi-shield">🔒</span>
+        <div className="phi-scan-info">
+          <div className="phi-scan-title">
+            PHI Scan Complete — {report.total_entities} identifier{report.total_entities !== 1 ? 's' : ''} detected and removed
+          </div>
+          <div className="phi-scan-sub">{report.summary}</div>
+        </div>
+      </div>
+
+      <div className="phi-scan-actions">
+        <button type="button" className="btn-ghost-sm" onClick={() => setExpanded(!expanded)}>
+          {expanded ? 'Hide details' : 'Review what was redacted'}
+        </button>
+        <button type="button" className="btn-ghost-sm" onClick={onRescan}>
+          Replace file
+        </button>
+      </div>
+
+      {expanded && report.by_type && Object.keys(report.by_type).length > 0 && (
+        <div className="phi-details">
+          {Object.entries(report.by_type).map(([type, values]) => (
+            <div key={type} className="phi-type-block">
+              <div className="phi-type-label">{typeLabels[type] || type} ({values.length})</div>
+              <div className="phi-values">
+                {values.map((v, i) => (
+                  <span key={i} className="phi-value-tag">
+                    {v}
+                    <span className="phi-arrow">→</span>
+                    <span className="phi-token">[{type}_{i + 1}]</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {report.total_entities === 0 && (
+        <div className="phi-none-found">
+          ✓ No PHI identifiers detected. Record appears clean.
+        </div>
+      )}
+
+      <div className="phi-confirm-bar">
+        <div className="phi-confirm-note">
+          ✓ All detected PHI has been replaced with tokens. Gemini will only see the redacted version.
+        </div>
+        <button type="button" className="btn-primary" onClick={onConfirm}>
+          Confirm &amp; Proceed to Analysis →
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function IntakeForm({ onSubmit, loading, error }) {
   const [activeSection, setActiveSection] = useState('claim')
 
   const [claimPayor, setClaimPayor] = useState('')
   const [denialCode, setDenialCode] = useState('')
   const [denialReasonCode, setDenialReasonCode] = useState('')
-
   const [billedCodes, setBilledCodes] = useState('')
   const [dxCodes, setDxCodes] = useState('')
   const [revenueCodes, setRevenueCodes] = useState('')
@@ -28,24 +99,74 @@ export default function IntakeForm({ onSubmit, loading, error }) {
   const [occurrenceCodes, setOccurrenceCodes] = useState('')
   const [valueCodes, setValueCodes] = useState([{ code: '', amount: '' }])
   const [drgCode, setDrgCode] = useState('')
-
   const [typeOfBill, setTypeOfBill] = useState('')
   const [visitType, setVisitType] = useState('')
   const [specialtyType, setSpecialtyType] = useState('')
   const [taxonomyCode, setTaxonomyCode] = useState('')
 
   const [recordFile, setRecordFile] = useState(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanError, setScanError] = useState(null)
+  const [phiReport, setPhiReport] = useState(null)
+  const [deidentifiedText, setDeidentifiedText] = useState('')
+  const [tokenMap, setTokenMap] = useState({})
+  const [scanConfirmed, setScanConfirmed] = useState(false)
 
   const needsTaxonomy = SPECIALTY_DENIAL_CODES.includes(denialCode.trim().toUpperCase().replace('CO-', ''))
 
   function updateValueCode(idx, field, val) {
     setValueCodes(vc => vc.map((row, i) => i === idx ? { ...row, [field]: val } : row))
   }
-  function addValueCodeRow() {
-    setValueCodes(vc => [...vc, { code: '', amount: '' }])
+  function addValueCodeRow() { setValueCodes(vc => [...vc, { code: '', amount: '' }]) }
+  function removeValueCodeRow(idx) { setValueCodes(vc => vc.filter((_, i) => i !== idx)) }
+
+  function handleFileChange(e) {
+    const file = e.target.files[0] || null
+    setRecordFile(file)
+    setPhiReport(null)
+    setDeidentifiedText('')
+    setTokenMap({})
+    setScanConfirmed(false)
+    setScanError(null)
   }
-  function removeValueCodeRow(idx) {
-    setValueCodes(vc => vc.filter((_, i) => i !== idx))
+
+  function handleRescan() {
+    setRecordFile(null)
+    setPhiReport(null)
+    setDeidentifiedText('')
+    setTokenMap({})
+    setScanConfirmed(false)
+    setScanError(null)
+  }
+
+  async function handleScan() {
+    if (!recordFile) return
+    setScanning(true)
+    setScanError(null)
+    try {
+      const formData = new FormData()
+      formData.append('medical_record', recordFile)
+      const res = await fetch(`${import.meta.env.VITE_API_BASE || 'http://localhost:8000'}/api/claims/scan`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Scan failed')
+      }
+      const data = await res.json()
+      setPhiReport(data.phi_report)
+      setDeidentifiedText(data.deidentified_text)
+      setTokenMap(data.token_map)
+    } catch (err) {
+      setScanError(err.message)
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  function handleConfirm() {
+    setScanConfirmed(true)
   }
 
   function handleSubmit(e) {
@@ -68,7 +189,7 @@ export default function IntakeForm({ onSubmit, loading, error }) {
       specialty_type: specialtyType || null,
       taxonomy_code: taxonomyCode || null,
     }
-    onSubmit(intake, recordFile)
+    onSubmit(intake, recordFile, deidentifiedText, tokenMap)
   }
 
   return (
@@ -88,6 +209,7 @@ export default function IntakeForm({ onSubmit, loading, error }) {
       </nav>
 
       <form className="ledger-form" onSubmit={handleSubmit}>
+
         {activeSection === 'claim' && (
           <section className="ledger-section">
             <h2>Claim &amp; Denial</h2>
@@ -139,7 +261,6 @@ export default function IntakeForm({ onSubmit, loading, error }) {
                 <input value={occurrenceCodes} onChange={e => setOccurrenceCodes(e.target.value)} placeholder="11, 24" />
               </div>
             </div>
-
             <div className="field">
               <label>Value Codes &amp; Amounts</label>
               {valueCodes.map((row, idx) => (
@@ -176,7 +297,6 @@ export default function IntakeForm({ onSubmit, loading, error }) {
               <label>Specialty Type</label>
               <input value={specialtyType} onChange={e => setSpecialtyType(e.target.value)} placeholder="e.g. Cardiology" />
             </div>
-
             {needsTaxonomy && (
               <div className="field taxonomy-field">
                 <label>Taxonomy Code <span className="hint">required for specialty/NPI denials</span></label>
@@ -189,24 +309,71 @@ export default function IntakeForm({ onSubmit, loading, error }) {
         {activeSection === 'record' && (
           <section className="ledger-section">
             <h2>Medical Record</h2>
-            <p className="section-note">
-              Uploaded records are scanned for HIPAA identifiers before anything leaves this server.
-              Names, dates of birth, MRNs, and similar identifiers are replaced with generic placeholders
-              prior to any AI processing.
-            </p>
-            <div className="field">
-              <label>Upload Record (PDF, DOCX, or TXT)</label>
-              <input type="file" accept=".pdf,.docx,.txt" onChange={e => setRecordFile(e.target.files[0] || null)} />
-            </div>
+
+            {!phiReport && (
+              <>
+                <p className="section-note">
+                  Your record will be scanned locally for PHI before anything is sent to AI.
+                  You will see exactly what was redacted and must confirm before analysis begins.
+                </p>
+                <div className="field">
+                  <label>Upload Record (PDF, DOCX, or TXT)</label>
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,.txt"
+                    onChange={handleFileChange}
+                  />
+                </div>
+                {recordFile && !phiReport && (
+                  <div className="phi-scan-prompt">
+                    <div className="phi-scan-filename">📄 {recordFile.name}</div>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={handleScan}
+                      disabled={scanning}
+                    >
+                      {scanning ? 'Scanning for PHI…' : '🔍 Scan for PHI'}
+                    </button>
+                  </div>
+                )}
+                {scanError && <div className="alert-error">{scanError}</div>}
+              </>
+            )}
+
+            {phiReport && !scanConfirmed && (
+              <PhiScanReport
+                report={phiReport}
+                onConfirm={handleConfirm}
+                onRescan={handleRescan}
+                scanning={scanning}
+              />
+            )}
+
+            {scanConfirmed && (
+              <div className="phi-confirmed-banner">
+                ✓ PHI scan confirmed — {phiReport.total_entities} identifier{phiReport.total_entities !== 1 ? 's' : ''} redacted.
+                Gemini will only see the cleaned record.
+                <button type="button" className="btn-ghost-sm" onClick={handleRescan} style={{ marginLeft: '12px' }}>
+                  Replace file
+                </button>
+              </div>
+            )}
           </section>
         )}
 
         {error && <div className="alert-error">{error}</div>}
 
         <div className="ledger-actions">
-          <button type="submit" className="btn-primary" disabled={loading}>
-            {loading ? 'Processing claim…' : 'Generate appeal analysis'}
-          </button>
+          {activeSection === 'record' && recordFile && !scanConfirmed ? (
+            <span className="hint" style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
+              Complete PHI scan and confirm before submitting
+            </span>
+          ) : (
+            <button type="submit" className="btn-primary" disabled={loading}>
+              {loading ? 'Processing claim…' : 'Generate appeal analysis'}
+            </button>
+          )}
         </div>
       </form>
     </div>
