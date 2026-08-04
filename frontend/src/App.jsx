@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './hooks/useAuth.jsx';
 import IntakeForm from './components/IntakeForm.jsx';
 import ResultView from './components/ResultView.jsx';
@@ -12,19 +12,28 @@ import './styles/app.css';
 function IntakePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const navigate = useNavigate();
+  const [result, setResult] = useState(null);
 
   async function handleSubmit(intake, recordFile, deidentifiedText, tokenMap) {
     setLoading(true);
     setError(null);
     try {
-      const result = await submitClaim(intake, recordFile, deidentifiedText, tokenMap);
-      navigate('/results', { state: { result } });
+      const data = await submitClaim(intake, recordFile, deidentifiedText, tokenMap);
+      setResult(data);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleReset() {
+    setResult(null);
+    setError(null);
+  }
+
+  if (result) {
+    return <ResultView result={result} onReset={handleReset} />;
   }
 
   return <IntakeForm onSubmit={handleSubmit} loading={loading} error={error} />;
@@ -38,7 +47,6 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/" element={<ProtectedRoute><IntakePage /></ProtectedRoute>} />
-          <Route path="/results" element={<ProtectedRoute><ResultView /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
