@@ -10,8 +10,7 @@ venv/
 !.env.example
 
 # GCP service account keys
-*.json
-!backend/app/data/carc_codes.json
+gcp-service-account.json
 
 # Node
 node_modules/
